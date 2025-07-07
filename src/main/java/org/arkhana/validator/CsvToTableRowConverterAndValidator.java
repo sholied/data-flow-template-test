@@ -6,6 +6,9 @@ import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.values.TupleTag;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVParser;
+import org.apache.commons.csv.CSVRecord;
 import org.joda.time.format.DateTimeFormat;
 import org.joda.time.format.DateTimeFormatter;
 import org.slf4j.Logger;
@@ -13,7 +16,6 @@ import org.slf4j.LoggerFactory;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
-import java.util.List;
 import java.util.Locale;
 
 public class CsvToTableRowConverterAndValidator extends DoFn<String, TableRow> {
@@ -25,6 +27,7 @@ public class CsvToTableRowConverterAndValidator extends DoFn<String, TableRow> {
     private final TableSchema expectedSchema;
     private final TupleTag<TableRow> validOutputTag;
     private final TupleTag<String> invalidRecordsTag;
+    private transient CSVFormat csvFormat; // transient karena tidak bisa diserialisasi
 
     // Format tanggal yang diharapkan untuk validasi
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormat.forPattern("yyyy-MM-dd").withLocale(Locale.ENGLISH);
@@ -39,6 +42,17 @@ public class CsvToTableRowConverterAndValidator extends DoFn<String, TableRow> {
         this.invalidRecordsTag = invalidRecordsTag;
     }
 
+    @Setup
+    public void setup() {
+        csvFormat = CSVFormat.DEFAULT.builder()
+                .setHeader(csvHeaders)
+                .setSkipHeaderRecord(true)
+//                .setDelimiter(",") // Pastikan delimiter sesuai dengan format CSV
+//                .setIgnoreHeaderCase(true) // Mengabaikan kasus header
+//                .setTrim(true) // Menghapus spasi di awal dan akhir nilai
+                .build();
+    }
+
     @ProcessElement
     public void processElement(@Element String csvLine, ProcessContext c) {
         // Logika untuk melewatkan header jika ada di CSV
@@ -49,18 +63,14 @@ public class CsvToTableRowConverterAndValidator extends DoFn<String, TableRow> {
         }
 
         try {
-            TableRow row = new TableRow();
-            String[] values = csvLine.split(","); // Hati-hati dengan koma di dalam nilai!
-
-            if (values.length != csvHeaders.length) { // Bandingkan dengan headers yang dimuat
-                throw new IllegalArgumentException(String.format(
-                        "Mismatched number of columns. Expected %d, found %d. Line: '%s'",
-                        csvHeaders.length, values.length, csvLine));
+            CSVRecord csvRecord;
+            try (CSVParser parser = CSVParser.parse(csvLine, csvFormat)) {
+                csvRecord = parser.getRecords().get(0); // Ambil record pertama (dan satu-satunya) dari baris ini
             }
-
-            for (int i = 0; i < csvHeaders.length; i++) {
-                String header = csvHeaders[i];
-                String value = values[i].trim().replace("\"", "");
+            TableRow row = new TableRow();
+            // Iterasi berdasarkan nama header (lebih robust)
+            for (String header : csvHeaders) {
+                String value = csvRecord.get(header); // Ambil nilai berdasarkan nama header
 
                 TableFieldSchema fieldSchema = expectedSchema.getFields().stream()
                         .filter(f -> f.getName().equalsIgnoreCase(header))
