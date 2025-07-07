@@ -46,6 +46,4 @@ build/
 ### Maven ###
 .mvn/*
 .idea/*
-mvnw
-mvnw.cmd
 dependency-reduced-pom.xml
