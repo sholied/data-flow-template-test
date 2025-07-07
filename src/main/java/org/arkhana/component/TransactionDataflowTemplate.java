@@ -11,6 +11,7 @@ import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.PCollectionTuple;
@@ -28,7 +29,6 @@ import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors; // Tambahkan ini
 
 public class TransactionDataflowTemplate {
 
@@ -43,11 +43,12 @@ public class TransactionDataflowTemplate {
         TransactionTemplateOptions options = PipelineOptionsFactory.fromArgs(args).withValidation().as(TransactionTemplateOptions.class);
         Pipeline pipeline = Pipeline.create(options);
 
-        TableSchema bigQuerySchema;
-        String[] csvHeaders; // Variable untuk menyimpan header CSV
+        TableSchema bigQuerySchema; // Still needed for BigQueryIO.write().withSchema()
+        String[] csvHeaders;
 
         try {
             // --- Memuat BigQuery Schema ---
+            // This part is crucial and remains on the client-side
             LOG.info("Loading BigQuery schema for pipeline construction from GCS: {}", options.getBigQuerySchemaPath());
             String schemaJson = readGcsFileToString(options.getBigQuerySchemaPath());
             JsonNode schemaNode = MAPPER.readTree(schemaJson);
@@ -60,14 +61,10 @@ public class TransactionDataflowTemplate {
                         .setMode(fieldNode.has("mode") ? fieldNode.get("mode").asText() : "NULLABLE");
                 fields.add(field);
             }
-            bigQuerySchema = new TableSchema().setFields(fields);
+            bigQuerySchema = new TableSchema().setFields(fields); // <--- bigQuerySchema initialized here
             LOG.info("BigQuery schema successfully loaded for BigQueryIO.write.");
 
-            // --- Membaca Header CSV dari File Input ---
             LOG.info("Attempting to read CSV headers from input file: {}", options.getInputFilePattern());
-            // Karena InputFilePattern bisa pakai wildcard, kita ambil yang pertama saja
-            // Asumsi file CSV memiliki header di baris pertama
-            // Ini akan membaca 1 file saja, jika ada banyak file, pastikan semua memiliki header yang sama
             csvHeaders = readCsvHeaderFromGcs(options.getInputFilePattern());
             LOG.info("CSV Headers successfully loaded: {}", String.join(", ", csvHeaders));
 
@@ -76,21 +73,24 @@ public class TransactionDataflowTemplate {
             throw new RuntimeException("Failed to setup pipeline due to schema or header loading error.", e);
         }
 
-        // Read input CSV lines from GCS (akan membaca data, DoFn akan skip header pertama)
+        // Read input CSV lines from GCS
         PCollectionTuple results = pipeline
                 .apply("ReadInputFiles", TextIO.read().from(options.getInputFilePattern()))
                 .apply("ParseCsvAndValidate", ParDo.of(new CsvToTableRowConverterAndValidator(
-                                csvHeaders,           // Teruskan headers
-                                bigQuerySchema,       // Teruskan skema BigQuery
+                                csvHeaders,
+                                options.getBigQuerySchemaPath(),
                                 VALID_RECORDS_TAG,
                                 INVALID_RECORDS_TAG))
                         .withOutputTags(VALID_RECORDS_TAG, TupleTagList.of(INVALID_RECORDS_TAG)));
 
-        results.get(INVALID_RECORDS_TAG)
-                .apply("WriteInvalidToDLQ", TextIO.write().to(options.getDeadLetterQueuePath())
-                        .withSuffix(".jsonl")
-                        .withNumShards(1) // Write all errors to a single file for easier inspection
-                        .withWindowedWrites());
+        // Write valid records (now TableRow) to BigQuery
+        results.get(VALID_RECORDS_TAG)
+                .apply("WriteValidToBigQuery",
+                        BigQueryIO.writeTableRows()
+                                .to(options.getOutputBigQueryTable())
+                                .withSchema(bigQuerySchema) // <--- Use the client-loaded schema here (it's fine)
+                                .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
+                                .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED));
 
         pipeline.run().waitUntilFinish();
     }
@@ -117,19 +117,9 @@ public class TransactionDataflowTemplate {
     @NotNull
     private static String[] readCsvHeaderFromGcs(String gcsPath) throws IOException {
         Storage storage = StorageOptions.getDefaultInstance().getService();
-        // Handle wildcard in inputFilePattern by finding the first matching file
-        // For simplicity, this assumes a single file or consistent headers across all files matching pattern.
-        // For real production, you might need more sophisticated file discovery.
         if (gcsPath.contains("*")) {
-            // Basic attempt to find a single file for header reading
-            // Note: this is a simplification. For robust wildcard handling,
-            // you might need to list blobs and pick one.
-            // For templates, typically the inputFilePattern points to a specific example file.
             LOG.warn("InputFilePattern contains wildcard ({}). Attempting to read header from a single resolved path. " +
                     "Ensure all CSV files have identical headers.", gcsPath);
-            // Example: If pattern is gs://bucket/data/*.csv, this might not resolve to a single file.
-            // A better way would be to list blobs and pick one.
-            // For now, assuming firstMatchingFilePath will be the correct path for header reading.
         }
 
         String pathWithoutPrefix = gcsPath.substring("gs://".length());
