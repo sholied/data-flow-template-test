@@ -1,4 +1,4 @@
-package org.arkhana.pipeline;
+package org.example.pipeline;
 
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;

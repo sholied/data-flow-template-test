@@ -1,6 +1,6 @@
-package org.arkhana;
+package org.example;
 
-import org.arkhana.component.TransactionDataflowTemplate;
+import org.example.component.TransactionDataflowTemplate;
 
 public class DataFlowCsvTemplate {
     public static void main(String[] args) {

@@ -1,4 +1,4 @@
-package org.arkhana.validator;
+package org.example.validator;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

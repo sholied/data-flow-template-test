@@ -1,4 +1,4 @@
-package org.arkhana.component;
+package org.example.component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -17,8 +17,8 @@ import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
-import org.arkhana.pipeline.TransactionTemplateOptions;
-import org.arkhana.validator.CsvToTableRowConverterAndValidator;
+import org.example.pipeline.TransactionTemplateOptions;
+import org.example.validator.CsvToTableRowConverterAndValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.jetbrains.annotations.NotNull;
