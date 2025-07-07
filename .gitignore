@@ -44,6 +44,5 @@ build/
 *.log
 
 ### Maven ###
-.mvn/*
 .idea/*
 dependency-reduced-pom.xml
