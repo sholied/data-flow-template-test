@@ -10,6 +10,7 @@ import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.values.TupleTag;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,16 +27,17 @@ public class SchemaValidator extends DoFn<String, String> {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     // Define output tags for valid and invalid records
-    private static final TupleTag<String> VALID_RECORDS_TAG = new TupleTag<String>() {};
-    private static final TupleTag<String> INVALID_RECORDS_TAG = new TupleTag<String>() {};
-
-
     private final String bigQuerySchemaPath;
-    private TableSchema expectedSchema;
-    private static final ObjectMapper mapper = new ObjectMapper(); // Thread-safe for read operations
+    private final TupleTag<String> validOutputTag;
+    private final TupleTag<String> invalidRecordsTag;
 
-    public SchemaValidator(String bigQuerySchemaPath) {
+    private TableSchema expectedSchema;
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    public SchemaValidator(String bigQuerySchemaPath, TupleTag<String> validOutputTag, TupleTag<String> invalidRecordsTag) {
         this.bigQuerySchemaPath = bigQuerySchemaPath;
+        this.validOutputTag = validOutputTag;
+        this.invalidRecordsTag = invalidRecordsTag;
     }
 
     @Setup
@@ -43,18 +45,7 @@ public class SchemaValidator extends DoFn<String, String> {
         // Load schema from GCS during setup (once per worker)
         LOG.info("Loading BigQuery schema from GCS: {}", bigQuerySchemaPath);
         try {
-            Storage storage = StorageOptions.getDefaultInstance().getService();
-            String bucketName = bigQuerySchemaPath.split("/")[2]; // Assuming gs://bucket/path
-            String blobName = bigQuerySchemaPath.substring(bigQuerySchemaPath.indexOf(bucketName) + bucketName.length() + 1);
-
-            BlobId blobId = BlobId.of(bucketName, blobName);
-            Blob blob = storage.get(blobId);
-
-            if (blob == null) {
-                throw new IOException("Schema file not found: " + bigQuerySchemaPath);
-            }
-
-            String schemaJson = new String(blob.getContent(), StandardCharsets.UTF_8);
+            String schemaJson = getSchemaJson();
 
             // Parse the JSON schema into TableSchema object
             // The JSON schema should be an array of TableFieldSchema objects
@@ -81,20 +72,33 @@ public class SchemaValidator extends DoFn<String, String> {
         }
     }
 
+    @NotNull
+    private String getSchemaJson() throws IOException {
+        Storage storage = StorageOptions.getDefaultInstance().getService();
+        String bucketName = bigQuerySchemaPath.split("/")[2]; // Assuming gs://bucket/path
+        String blobName = bigQuerySchemaPath.substring(bigQuerySchemaPath.indexOf(bucketName) + bucketName.length() + 1);
+
+        BlobId blobId = BlobId.of(bucketName, blobName);
+        Blob blob = storage.get(blobId);
+
+        if (blob == null) {
+            throw new IOException("Schema file not found: " + bigQuerySchemaPath);
+        }
+
+        return new String(blob.getContent(), StandardCharsets.UTF_8);
+    }
+
     @ProcessElement
     public void processElement(@Element String jsonLine, ProcessContext c) {
         JsonNode record;
         try {
             record = mapper.readTree(jsonLine);
-            // Perform validation based on expectedSchema
             validateRecord(record);
-            // If valid, output the record as JSON string
-            c.output(VALID_RECORDS_TAG, jsonLine);
+            c.output(validOutputTag, jsonLine);
 
         } catch (Exception e) {
-            // If parsing or validation fails, output to dead-letter queue
             LOG.warn("Invalid record encountered: {}. Error: {}", jsonLine, e.getMessage());
-            c.output(INVALID_RECORDS_TAG,
+            c.output(invalidRecordsTag,
                     String.format("{\"original_data\": %s, \"error_message\": \"%s\", \"processing_time\": \"%s\"}",
                             jsonLine, e.getMessage().replace("\"", "'"), java.time.Instant.now()));
         }

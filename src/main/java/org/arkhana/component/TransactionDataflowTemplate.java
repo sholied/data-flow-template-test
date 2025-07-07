@@ -19,6 +19,7 @@ import org.apache.beam.sdk.values.TupleTag;
 import org.apache.beam.sdk.values.TupleTagList;
 import org.arkhana.pipeline.TransactionTemplateOptions;
 import org.arkhana.validator.SchemaValidator;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,11 +32,8 @@ public class TransactionDataflowTemplate {
 
     private static final Logger LOG = LoggerFactory.getLogger(TransactionDataflowTemplate.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    // Define output tags for valid and invalid records
     private static final TupleTag<String> VALID_RECORDS_TAG = new TupleTag<String>() {};
     private static final TupleTag<String> INVALID_RECORDS_TAG = new TupleTag<String>() {};
-
 
     public static void mainJob(String[] args) {
         TransactionTemplateOptions options = PipelineOptionsFactory.fromArgs(args).withValidation().as(TransactionTemplateOptions.class);
@@ -46,23 +44,7 @@ public class TransactionDataflowTemplate {
             // Load BigQuery schema once for the pipeline to use for BigQueryIO.write
             // This is done on the client side before pipeline construction
             LOG.info("Loading BigQuery schema for pipeline construction from GCS: {}", options.getBigQuerySchemaPath());
-            Storage storage = StorageOptions.getDefaultInstance().getService();
-            String schemaPath = options.getBigQuerySchemaPath();
-
-            // Parse bucket and blob name correctly from GCS path
-            String pathWithoutPrefix = schemaPath.substring("gs://".length());
-            int firstSlash = pathWithoutPrefix.indexOf('/');
-            String bucketName = pathWithoutPrefix.substring(0, firstSlash);
-            String blobName = pathWithoutPrefix.substring(firstSlash + 1);
-
-            BlobId blobId = BlobId.of(bucketName, blobName);
-            Blob blob = storage.get(blobId);
-
-            if (blob == null) {
-                throw new RuntimeException("Schema file not found at " + options.getBigQuerySchemaPath());
-            }
-
-            String schemaJson = new String(blob.getContent(), StandardCharsets.UTF_8);
+            String schemaJson = getString(options);
             JsonNode schemaNode = MAPPER.readTree(schemaJson);
 
             List<TableFieldSchema> fields = new ArrayList<>();
@@ -84,7 +66,10 @@ public class TransactionDataflowTemplate {
         // Read input JSON lines from GCS
         PCollectionTuple results = pipeline
                 .apply("ReadInputFiles", TextIO.read().from(options.getInputFilePattern()))
-                .apply("ValidateAndParse", ParDo.of(new SchemaValidator(options.getBigQuerySchemaPath()))
+                .apply("ValidateAndParse", ParDo.of(new SchemaValidator(
+                                options.getBigQuerySchemaPath(),
+                                VALID_RECORDS_TAG,
+                                INVALID_RECORDS_TAG))
                         .withOutputTags(VALID_RECORDS_TAG, TupleTagList.of(INVALID_RECORDS_TAG)));
 
         // Write valid records to BigQuery
@@ -116,5 +101,26 @@ public class TransactionDataflowTemplate {
                         .withWindowedWrites()); // Required for streaming or unbounded PCollections
 
         pipeline.run().waitUntilFinish();
+    }
+
+    @NotNull
+    private static String getString(TransactionTemplateOptions options) {
+        Storage storage = StorageOptions.getDefaultInstance().getService();
+        String schemaPath = options.getBigQuerySchemaPath();
+
+        // Parse bucket and blob name correctly from GCS path
+        String pathWithoutPrefix = schemaPath.substring("gs://".length());
+        int firstSlash = pathWithoutPrefix.indexOf('/');
+        String bucketName = pathWithoutPrefix.substring(0, firstSlash);
+        String blobName = pathWithoutPrefix.substring(firstSlash + 1);
+
+        BlobId blobId = BlobId.of(bucketName, blobName);
+        Blob blob = storage.get(blobId);
+
+        if (blob == null) {
+            throw new RuntimeException("Schema file not found at " + options.getBigQuerySchemaPath());
+        }
+
+        return new String(blob.getContent(), StandardCharsets.UTF_8);
     }
 }
